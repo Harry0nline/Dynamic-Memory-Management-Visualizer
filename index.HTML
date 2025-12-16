@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memory Management Visualizer</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .animate-slide-in {
+            animation: slideIn 0.3s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Lucide React icons as inline SVGs
+        const Icon = ({ name, size = 24, className = "" }) => {
+            const icons = {
+                play: <path d="M5 3l14 9-14 9V3z"/>,
+                pause: <><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></>,
+                rotate: <path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/>,
+                trash: <><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></>,
+                plus: <><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>,
+                cpu: <><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></>,
+                database: <><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></>,
+                layers: <><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></>
+            };
+
+            return (
+                <svg 
+                    width={size} 
+                    height={size} 
+                    viewBox="0 0 24 24" 
+                    fill="none" 
+                    stroke="currentColor" 
+                    strokeWidth="2" 
+                    strokeLinecap="round" 
+                    strokeLinejoin="round"
+                    className={className}
+                >
+                    {icons[name]}
+                </svg>
+            );
+        };
+
+        const MemoryVisualizer = () => {
+            const [heapBlocks, setHeapBlocks] = useState([]);
+            const [stackFrames, setStackFrames] = useState([]);
+            const [nextId, setNextId] = useState(1);
+            const [allocSize, setAllocSize] = useState(32);
+            const [isAutoMode, setIsAutoMode] = useState(false);
+            const [logs, setLogs] = useState([]);
+            const [terminalHistory, setTerminalHistory] = useState([
+                { type: 'system', text: 'Memory Manager Terminal v1.0' },
+                { type: 'system', text: 'Type "help" for available commands' }
+            ]);
+            const [terminalInput, setTerminalInput] = useState('');
+            const [commandHistory, setCommandHistory] = useState([]);
+            const [historyIndex, setHistoryIndex] = useState(-1);
+            const [stats, setStats] = useState({
+                totalAllocated: 0,
+                totalFreed: 0,
+                fragmentation: 0,
+                activeBlocks: 0
+            });
+
+            const HEAP_SIZE = 512;
+            const COLORS = ['#06b6d4', '#8b5cf6', '#f59e0b', '#ec4899', '#10b981', '#3b82f6'];
+
+            const addLog = (message, type = 'info') => {
+                setLogs(prev => [{
+                    id: Date.now(),
+                    message,
+                    type,
+                    time: new Date().toLocaleTimeString()
+                }, ...prev.slice(0, 9)]);
+            };
+
+            const addTerminalOutput = (text, type = 'output') => {
+                setTerminalHistory(prev => [...prev, { type, text, time: Date.now() }]);
+            };
+
+            const executeCommand = (cmd) => {
+                if (!cmd.trim()) return;
+                
+                addTerminalOutput(`$ ${cmd}`, 'command');
+                setCommandHistory(prev => [...prev, cmd]);
+                setHistoryIndex(-1);
+
+                const parts = cmd.trim().toLowerCase().split(' ');
+                const command = parts[0];
+                const args = parts.slice(1);
+
+                switch(command) {
+                    case 'help':
+                        addTerminalOutput('Available commands:', 'success');
+                        addTerminalOutput('  malloc <size>  - Allocate memory (e.g., malloc 64)', 'info');
+                        addTerminalOutput('  free <id>      - Free memory block (e.g., free 1)', 'info');
+                        addTerminalOutput('  push           - Push stack frame', 'info');
+                        addTerminalOutput('  pop            - Pop stack frame', 'info');
+                        addTerminalOutput('  list           - Show all allocated blocks', 'info');
+                        addTerminalOutput('  stack          - Show stack frames', 'info');
+                        addTerminalOutput('  stats          - Show memory statistics', 'info');
+                        addTerminalOutput('  auto [on|off]  - Toggle auto mode', 'info');
+                        addTerminalOutput('  reset          - Reset memory', 'info');
+                        addTerminalOutput('  clear          - Clear terminal', 'info');
+                        break;
+
+                    case 'malloc':
+                        const size = parseInt(args[0]);
+                        if (isNaN(size) || size < 8 || size > 128) {
+                            addTerminalOutput('Error: Invalid size. Use 8-128 KB', 'error');
+                        } else {
+                            allocateMemory(size);
+                            addTerminalOutput(`Allocated ${size}KB`, 'success');
+                        }
+                        break;
+
+                    case 'free':
+                        const blockId = parseInt(args[0]);
+                        const block = heapBlocks.find(b => b.id === blockId);
+                        if (!block) {
+                            addTerminalOutput(`Error: Block #${blockId} not found`, 'error');
+                        } else {
+                            freeMemory(blockId);
+                            addTerminalOutput(`Freed block #${blockId}`, 'success');
+                        }
+                        break;
+
+                    case 'push':
+                        if (stackFrames.length >= 8) {
+                            addTerminalOutput('Error: Stack overflow', 'error');
+                        } else {
+                            pushStack();
+                            addTerminalOutput('Stack frame pushed', 'success');
+                        }
+                        break;
+
+                    case 'pop':
+                        if (stackFrames.length === 0) {
+                            addTerminalOutput('Error: Stack is empty', 'error');
+                        } else {
+                            popStack();
+                            addTerminalOutput('Stack frame popped', 'success');
+                        }
+                        break;
+
+                    case 'list':
+                        if (heapBlocks.length === 0) {
+                            addTerminalOutput('No allocated blocks', 'info');
+                        } else {
+                            addTerminalOutput(`Allocated blocks (${heapBlocks.length}):`, 'success');
+                            heapBlocks.forEach(b => {
+                                addTerminalOutput(`  #${b.id}: ${b.size}KB @ 0x${b.position.toString(16).padStart(4, '0')}`, 'info');
+                            });
+                        }
+                        break;
+
+                    case 'stack':
+                        if (stackFrames.length === 0) {
+                            addTerminalOutput('Stack is empty', 'info');
+                        } else {
+                            addTerminalOutput(`Stack frames (${stackFrames.length}):`, 'success');
+                            stackFrames.slice().reverse().forEach((f, i) => {
+                                addTerminalOutput(`  ${i + 1}. ${f.name} [${f.variables} vars]`, 'info');
+                            });
+                        }
+                        break;
+
+                    case 'stats':
+                        addTerminalOutput('Memory Statistics:', 'success');
+                        addTerminalOutput(`  Heap Usage: ${heapPercentage}% (${usedHeap}/${HEAP_SIZE} KB)`, 'info');
+                        addTerminalOutput(`  Active Blocks: ${stats.activeBlocks}`, 'info');
+                        addTerminalOutput(`  Fragmentation: ${stats.fragmentation} gaps`, 'info');
+                        addTerminalOutput(`  Total Allocated: ${stats.totalAllocated} KB`, 'info');
+                        addTerminalOutput(`  Total Freed: ${stats.totalFreed} KB`, 'info');
+                        addTerminalOutput(`  Stack Depth: ${stackFrames.length}`, 'info');
+                        break;
+
+                    case 'auto':
+                        const mode = args[0];
+                        if (mode === 'on') {
+                            setIsAutoMode(true);
+                            addTerminalOutput('Auto mode enabled', 'success');
+                        } else if (mode === 'off') {
+                            setIsAutoMode(false);
+                            addTerminalOutput('Auto mode disabled', 'success');
+                        } else {
+                            setIsAutoMode(!isAutoMode);
+                            addTerminalOutput(`Auto mode ${!isAutoMode ? 'enabled' : 'disabled'}`, 'success');
+                        }
+                        break;
+
+                    case 'reset':
+                        reset();
+                        addTerminalOutput('Memory reset complete', 'success');
+                        break;
+
+                    case 'clear':
+                        setTerminalHistory([
+                            { type: 'system', text: 'Memory Manager Terminal v1.0' },
+                            { type: 'system', text: 'Type "help" for available commands' }
+                        ]);
+                        break;
+
+                    default:
+                        addTerminalOutput(`Unknown command: ${command}. Type "help" for available commands.`, 'error');
+                }
+            };
+
+            const handleTerminalKeyDown = (e) => {
+                if (e.key === 'Enter') {
+                    executeCommand(terminalInput);
+                    setTerminalInput('');
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    if (commandHistory.length > 0) {
+                        const newIndex = historyIndex === -1 ? commandHistory.length - 1 : Math.max(0, historyIndex - 1);
+                        setHistoryIndex(newIndex);
+                        setTerminalInput(commandHistory[newIndex]);
+                    }
+                } else if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    if (historyIndex !== -1) {
+                        const newIndex = historyIndex + 1;
+                        if (newIndex >= commandHistory.length) {
+                            setHistoryIndex(-1);
+                            setTerminalInput('');
+                        } else {
+                            setHistoryIndex(newIndex);
+                            setTerminalInput(commandHistory[newIndex]);
+                        }
+                    }
+                }
+            };
+
+            const allocateMemory = (size) => {
+                let position = 0;
+                const sortedBlocks = [...heapBlocks].sort((a, b) => a.position - b.position);
+                
+                for (let i = 0; i < sortedBlocks.length; i++) {
+                    const gap = sortedBlocks[i].position - position;
+                    if (gap >= size) break;
+                    position = sortedBlocks[i].position + sortedBlocks[i].size;
+                }
+
+                if (position + size > HEAP_SIZE) {
+                    addLog(`Allocation failed: ${size}KB exceeds available memory`, 'error');
+                    return;
+                }
+
+                const newBlock = {
+                    id: nextId,
+                    size,
+                    position,
+                    color: COLORS[nextId % COLORS.length],
+                    allocated: Date.now()
+                };
+
+                setHeapBlocks(prev => [...prev, newBlock]);
+                setNextId(prev => prev + 1);
+                setStats(prev => ({
+                    ...prev,
+                    totalAllocated: prev.totalAllocated + size,
+                    activeBlocks: prev.activeBlocks + 1
+                }));
+                addLog(`malloc(${size}KB) → 0x${position.toString(16).padStart(4, '0')}`, 'success');
+            };
+
+            const freeMemory = (blockId) => {
+                const block = heapBlocks.find(b => b.id === blockId);
+                if (!block) return;
+
+                setHeapBlocks(prev => prev.filter(b => b.id !== blockId));
+                setStats(prev => ({
+                    ...prev,
+                    totalFreed: prev.totalFreed + block.size,
+                    activeBlocks: prev.activeBlocks - 1
+                }));
+                addLog(`free(0x${block.position.toString(16).padStart(4, '0')}) → ${block.size}KB released`, 'info');
+            };
+
+            const pushStack = () => {
+                if (stackFrames.length >= 8) {
+                    addLog('Stack overflow detected!', 'error');
+                    return;
+                }
+                const frame = {
+                    id: nextId,
+                    name: `func_${nextId}()`,
+                    variables: Math.floor(Math.random() * 3) + 1
+                };
+                setStackFrames(prev => [...prev, frame]);
+                setNextId(prev => prev + 1);
+                addLog(`Called ${frame.name}`, 'success');
+            };
+
+            const popStack = () => {
+                if (stackFrames.length === 0) {
+                    addLog('Stack underflow: No frames to pop', 'error');
+                    return;
+                }
+                const frame = stackFrames[stackFrames.length - 1];
+                setStackFrames(prev => prev.slice(0, -1));
+                addLog(`Return from ${frame.name}`, 'info');
+            };
+
+            const calculateFragmentation = () => {
+                if (heapBlocks.length === 0) return 0;
+                const sortedBlocks = [...heapBlocks].sort((a, b) => a.position - b.position);
+                let gaps = 0;
+                let prevEnd = 0;
+                
+                sortedBlocks.forEach(block => {
+                    if (block.position > prevEnd) gaps++;
+                    prevEnd = block.position + block.size;
+                });
+                
+                return gaps;
+            };
+
+            const reset = () => {
+                setHeapBlocks([]);
+                setStackFrames([]);
+                setNextId(1);
+                setStats({
+                    totalAllocated: 0,
+                    totalFreed: 0,
+                    fragmentation: 0,
+                    activeBlocks: 0
+                });
+                setLogs([]);
+                addLog('System reset complete', 'info');
+            };
+
+            useEffect(() => {
+                setStats(prev => ({
+                    ...prev,
+                    fragmentation: calculateFragmentation()
+                }));
+            }, [heapBlocks]);
+
+            useEffect(() => {
+                if (!isAutoMode) return;
+                
+                const interval = setInterval(() => {
+                    const action = Math.random();
+                    if (action < 0.4 && heapBlocks.length < 10) {
+                        allocateMemory(Math.floor(Math.random() * 48) + 16);
+                    } else if (action < 0.7 && heapBlocks.length > 0) {
+                        const randomBlock = heapBlocks[Math.floor(Math.random() * heapBlocks.length)];
+                        freeMemory(randomBlock.id);
+                    } else if (action < 0.85) {
+                        pushStack();
+                    } else if (stackFrames.length > 0) {
+                        popStack();
+                    }
+                }, 1500);
+
+                return () => clearInterval(interval);
+            }, [isAutoMode, heapBlocks, stackFrames]);
+
+            const usedHeap = heapBlocks.reduce((sum, b) => sum + b.size, 0);
+            const heapPercentage = ((usedHeap / HEAP_SIZE) * 100).toFixed(1);
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white">
+                    {/* Header */}
+                    <div className="border-b border-slate-800 bg-slate-900/50 backdrop-blur">
+                        <div className="max-w-7xl mx-auto px-6 py-6">
+                            <div className="flex items-center gap-3 mb-2">
+                                <Icon name="cpu" size={32} className="text-cyan-400" />
+                                <h1 className="text-3xl font-bold">Memory Manager</h1>
+                            </div>
+                            <p className="text-slate-400">Real-time visualization of dynamic memory allocation</p>
+                        </div>
+                    </div>
+
+                    <div className="max-w-7xl mx-auto px-6 py-8">
+                        {/* Stats Dashboard */}
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+                            <div className="bg-gradient-to-br from-cyan-500/10 to-cyan-500/5 border border-cyan-500/20 rounded-xl p-5">
+                                <div className="flex items-center gap-2 mb-2">
+                                    <Icon name="database" size={18} className="text-cyan-400" />
+                                    <span className="text-slate-400 text-sm font-medium">Heap Usage</span>
+                                </div>
+                                <div className="text-3xl font-bold text-cyan-400">{heapPercentage}%</div>
+                                <div className="text-xs text-slate-500 mt-1">{usedHeap}/{HEAP_SIZE} KB</div>
+                            </div>
+
+                            <div className="bg-gradient-to-br from-purple-500/10 to-purple-500/5 border border-purple-500/20 rounded-xl p-5">
+                                <div className="flex items-center gap-2 mb-2">
+                                    <Icon name="layers" size={18} className="text-purple-400" />
+                                    <span className="text-slate-400 text-sm font-medium">Active Blocks</span>
+                                </div>
+                                <div className="text-3xl font-bold text-purple-400">{stats.activeBlocks}</div>
+                                <div className="text-xs text-slate-500 mt-1">Allocated segments</div>
+                            </div>
+
+                            <div className="bg-gradient-to-br from-amber-500/10 to-amber-500/5 border border-amber-500/20 rounded-xl p-5">
+                                <div className="flex items-center gap-2 mb-2">
+                                    <div className="w-4 h-4 bg-amber-400 rounded"></div>
+                                    <span className="text-slate-400 text-sm font-medium">Fragmentation</span>
+                                </div>
+                                <div className="text-3xl font-bold text-amber-400">{stats.fragmentation}</div>
+                                <div className="text-xs text-slate-500 mt-1">Memory gaps</div>
+                            </div>
+
+                            <div className="bg-gradient-to-br from-emerald-500/10 to-emerald-500/5 border border-emerald-500/20 rounded-xl p-5">
+                                <div className="flex items-center gap-2 mb-2">
+                                    <div className="w-4 h-4 bg-emerald-400 rounded-full"></div>
+                                    <span className="text-slate-400 text-sm font-medium">Stack Depth</span>
+                                </div>
+                                <div className="text-3xl font-bold text-emerald-400">{stackFrames.length}</div>
+                                <div className="text-xs text-slate-500 mt-1">Call frames</div>
+                            </div>
+                        </div>
+
+                        {/* Main Visualization Area */}
+                        <div className="grid lg:grid-cols-3 gap-6 mb-8">
+                            {/* Heap Visualization */}
+                            <div className="lg:col-span-2">
+                                <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden">
+                                    <div className="bg-slate-800/50 px-6 py-4 border-b border-slate-700">
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-2">
+                                                <div className="w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></div>
+                                                <h2 className="text-lg font-semibold">Heap Memory Space</h2>
+                                            </div>
+                                            <span className="text-sm text-slate-500 font-mono">512 KB</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="p-6">
+                                        <div className="relative h-80 bg-slate-950 rounded-lg border border-slate-800 overflow-hidden">
+                                            {/* Grid pattern background */}
+                                            <div className="absolute inset-0" style={{
+                                                backgroundImage: 'linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px)',
+                                                backgroundSize: '20px 20px'
+                                            }}></div>
+
+                                            {/* Memory blocks */}
+                                            {heapBlocks.map(block => (
+                                                <div
+                                                    key={block.id}
+                                                    className="absolute h-full cursor-pointer transition-all hover:brightness-125 group"
+                                                    style={{
+                                                        left: `${(block.position / HEAP_SIZE) * 100}%`,
+                                                        width: `${(block.size / HEAP_SIZE) * 100}%`,
+                                                        background: `linear-gradient(135deg, ${block.color} 0%, ${block.color}dd 100%)`
+                                                    }}
+                                                    onClick={() => freeMemory(block.id)}
+                                                >
+                                                    <div className="absolute inset-0 flex flex-col items-center justify-center text-xs font-mono p-2">
+                                                        <div className="font-bold text-sm mb-1">Block #{block.id}</div>
+                                                        <div className="font-semibold">{block.size} KB</div>
+                                                        <div className="text-[10px] opacity-75 mt-1">0x{block.position.toString(16).padStart(4, '0')}</div>
+                                                    </div>
+                                                    <div className="absolute inset-0 border-2 border-white/20"></div>
+                                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                                        <Icon name="trash" size={20} />
+                                                    </div>
+                                                </div>
+                                            ))}
+
+                                            {heapBlocks.length === 0 && (
+                                                <div className="absolute inset-0 flex items-center justify-center">
+                                                    <div className="text-center text-slate-600">
+                                                        <Icon name="database" size={48} className="mx-auto mb-3 opacity-50" />
+                                                        <div className="font-medium">Heap is empty</div>
+                                                        <div className="text-sm mt-1">Allocate memory to visualize</div>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                        
+                                        <div className="mt-4 text-sm text-slate-500 flex items-center gap-2">
+                                            <div className="w-1.5 h-1.5 bg-cyan-400 rounded-full"></div>
+                                            Click any block to deallocate • First-fit algorithm
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Stack Visualization */}
+                            <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden">
+                                <div className="bg-slate-800/50 px-6 py-4 border-b border-slate-700">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
+                                        <h2 className="text-lg font-semibold">Call Stack</h2>
+                                    </div>
+                                </div>
+                                
+                                <div className="p-6">
+                                    <div className="space-y-2 min-h-[320px] flex flex-col-reverse">
+                                        {stackFrames.map((frame, idx) => (
+                                            <div
+                                                key={frame.id}
+                                                className="bg-gradient-to-r from-emerald-500/20 to-emerald-500/10 border-l-4 border-emerald-400 rounded-r-lg p-4 backdrop-blur animate-slide-in"
+                                            >
+                                                <div className="font-mono font-semibold text-sm text-emerald-300">{frame.name}</div>
+                                                <div className="text-xs text-slate-400 mt-1 flex items-center gap-2">
+                                                    <span>{frame.variables} local variables</span>
+                                                    <span className="text-slate-600">•</span>
+                                                    <span>Frame {stackFrames.length - idx}</span>
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {stackFrames.length === 0 && (
+                                            <div className="flex items-center justify-center h-full text-slate-600">
+                                                <div className="text-center">
+                                                    <Icon name="layers" size={48} className="mx-auto mb-3 opacity-50" />
+                                                    <div className="font-medium">Stack is empty</div>
+                                                    <div className="text-sm mt-1">Push frames to begin</div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Control Panel */}
+                        <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 mb-8">
+                            <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Control Panel</h3>
+                            <div className="flex flex-wrap gap-3">
+                                <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-4 py-2">
+                                    <input
+                                        type="range"
+                                        value={allocSize}
+                                        onChange={(e) => setAllocSize(parseInt(e.target.value))}
+                                        min="8"
+                                        max="128"
+                                        step="8"
+                                        className="w-32"
+                                    />
+                                    <span className="font-mono text-sm font-semibold text-cyan-400 min-w-[60px]">{allocSize} KB</span>
+                                </div>
+
+                                <button
+                                    onClick={() => allocateMemory(allocSize)}
+                                    className="px-5 py-2 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 rounded-lg font-medium flex items-center gap-2 transition-all shadow-lg shadow-cyan-500/20"
+                                >
+                                    <Icon name="plus" size={18} />
+                                    Allocate Heap
+                                </button>
+
+                                <button
+                                    onClick={pushStack}
+                                    className="px-5 py-2 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 rounded-lg font-medium flex items-center gap-2 transition-all shadow-lg shadow-emerald-500/20"
+                                >
+                                    <Icon name="plus" size={18} />
+                                    Push Stack
+                                </button>
+
+                                <button
+                                    onClick={popStack}
+                                    className="px-5 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg font-medium flex items-center gap-2 transition-all"
+                                >
+                                    <Icon name="trash" size={18} />
+                                    Pop Stack
+                                </button>
+
+                                <div className="flex-1"></div>
+
+                                <button
+                                    onClick={() => setIsAutoMode(!isAutoMode)}
+                                    className={`px-5 py-2 rounded-lg font-medium flex items-center gap-2 transition-all ${
+                                        isAutoMode 
+                                            ? 'bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 shadow-lg shadow-rose-500/20' 
+                                            : 'bg-gradient-to-r from-purple-600 to-purple-500 hover:from-purple-500 hover:to-purple-400 shadow-lg shadow-purple-500/20'
+                                    }`}
+                                >
+                                    <Icon name={isAutoMode ? 'pause' : 'play'} size={18} />
+                                    {isAutoMode ? 'Stop Auto' : 'Auto Mode'}
+                                </button>
+
+                                <button
+                                    onClick={reset}
+                                    className="px-5 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg font-medium flex items-center gap-2 transition-all"
+                                >
+                                    <Icon name="rotate" size={18} />
+                                    Reset
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Activity Log */}
+                        <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden">
+                            <div className="bg-slate-800/50 px-6 py-4 border-b border-slate-700">
+                                <h3 className="text-lg font-semibold">Activity Log</h3>
+                            </div>
+                            <div className="p-6">
+                                <div className="space-y-2 max-h-64 overflow-y-auto font-mono text-sm">
+                                    {logs.map(log => (
+                                        <div 
+                                            key={log.id} 
+                                            className="flex items-start gap-4 py-2 border-b border-slate-800/50 last:border-0"
+                                        >
+                                            <span className="text-slate-600 text-xs mt-0.5 min-w-[70px]">{log.time}</span>
+                                            <span className={`flex-1 ${
+                                                log.type === 'error' ? 'text-rose-400' :
+                                                log.type === 'success' ? 'text-emerald-400' :
+                                                'text-slate-400'
+                                            }`}>
+                                                {log.message}
+                                            </span>
+                                        </div>
+                                    ))}
+                                    {logs.length === 0 && (
+                                        <div className="text-center text-slate-600 py-8">
+                                            No activity recorded yet
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Terminal */}
+                        <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden mt-6">
+                            <div className="bg-slate-800/50 px-6 py-4 border-b border-slate-700 flex items-center justify-between">
+                                <h3 className="text-lg font-semibold">Command Terminal</h3>
+                                <span className="text-xs text-slate-500 font-mono">Type "help" for commands</span>
+                            </div>
+                            <div className="p-6 bg-black/30">
+                                <div className="bg-black/50 rounded-lg p-4 font-mono text-sm">
+                                    <div className="space-y-1 max-h-64 overflow-y-auto mb-3" id="terminal-output">
+                                        {terminalHistory.map((entry, idx) => (
+                                            <div 
+                                                key={idx}
+                                                className={
+                                                    entry.type === 'command' ? 'text-cyan-400 font-semibold' :
+                                                    entry.type === 'error' ? 'text-rose-400' :
+                                                    entry.type === 'success' ? 'text-emerald-400' :
+                                                    entry.type === 'system' ? 'text-purple-400' :
+                                                    'text-slate-400'
+                                                }
+                                            >
+                                                {entry.text}
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-emerald-400">$</span>
+                                        <input
+                                            type="text"
+                                            value={terminalInput}
+                                            onChange={(e) => setTerminalInput(e.target.value)}
+                                            onKeyDown={handleTerminalKeyDown}
+                                            className="flex-1 bg-transparent outline-none text-white"
+                                            placeholder="Enter command..."
+                                            autoComplete="off"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        ReactDOM.render(<MemoryVisualizer />, document.getElementById('root'));
+    </script>
+</body>
+</html>
