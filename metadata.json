@@ -1,0 +1,5 @@
+{
+  "name": "Copy of MemVis - Dynamic Memory Visualizer",
+  "description": "An interactive visualization of dynamic memory management (malloc/free) with a CLI terminal, animations, and AI-powered heap analysis.",
+  "requestFramePermissions": []
+}
