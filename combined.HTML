@@ -67,6 +67,13 @@
             const [allocSize, setAllocSize] = useState(32);
             const [isAutoMode, setIsAutoMode] = useState(false);
             const [logs, setLogs] = useState([]);
+            const [terminalHistory, setTerminalHistory] = useState([
+                { type: 'system', text: 'Memory Manager Terminal v1.0' },
+                { type: 'system', text: 'Type "help" for available commands' }
+            ]);
+            const [terminalInput, setTerminalInput] = useState('');
+            const [commandHistory, setCommandHistory] = useState([]);
+            const [historyIndex, setHistoryIndex] = useState(-1);
             const [stats, setStats] = useState({
                 totalAllocated: 0,
                 totalFreed: 0,
@@ -84,6 +91,164 @@
                     type,
                     time: new Date().toLocaleTimeString()
                 }, ...prev.slice(0, 9)]);
+            };
+
+            const addTerminalOutput = (text, type = 'output') => {
+                setTerminalHistory(prev => [...prev, { type, text, time: Date.now() }]);
+            };
+
+            const executeCommand = (cmd) => {
+                if (!cmd.trim()) return;
+                
+                addTerminalOutput(`$ ${cmd}`, 'command');
+                setCommandHistory(prev => [...prev, cmd]);
+                setHistoryIndex(-1);
+
+                const parts = cmd.trim().toLowerCase().split(' ');
+                const command = parts[0];
+                const args = parts.slice(1);
+
+                switch(command) {
+                    case 'help':
+                        addTerminalOutput('Available commands:', 'success');
+                        addTerminalOutput('  malloc <size>  - Allocate memory (e.g., malloc 64)', 'info');
+                        addTerminalOutput('  free <id>      - Free memory block (e.g., free 1)', 'info');
+                        addTerminalOutput('  push           - Push stack frame', 'info');
+                        addTerminalOutput('  pop            - Pop stack frame', 'info');
+                        addTerminalOutput('  list           - Show all allocated blocks', 'info');
+                        addTerminalOutput('  stack          - Show stack frames', 'info');
+                        addTerminalOutput('  stats          - Show memory statistics', 'info');
+                        addTerminalOutput('  auto [on|off]  - Toggle auto mode', 'info');
+                        addTerminalOutput('  reset          - Reset memory', 'info');
+                        addTerminalOutput('  clear          - Clear terminal', 'info');
+                        break;
+
+                    case 'malloc':
+                        const size = parseInt(args[0]);
+                        if (isNaN(size) || size < 8 || size > 128) {
+                            addTerminalOutput('Error: Invalid size. Use 8-128 KB', 'error');
+                        } else {
+                            allocateMemory(size);
+                            addTerminalOutput(`Allocated ${size}KB`, 'success');
+                        }
+                        break;
+
+                    case 'free':
+                        const blockId = parseInt(args[0]);
+                        const block = heapBlocks.find(b => b.id === blockId);
+                        if (!block) {
+                            addTerminalOutput(`Error: Block #${blockId} not found`, 'error');
+                        } else {
+                            freeMemory(blockId);
+                            addTerminalOutput(`Freed block #${blockId}`, 'success');
+                        }
+                        break;
+
+                    case 'push':
+                        if (stackFrames.length >= 8) {
+                            addTerminalOutput('Error: Stack overflow', 'error');
+                        } else {
+                            pushStack();
+                            addTerminalOutput('Stack frame pushed', 'success');
+                        }
+                        break;
+
+                    case 'pop':
+                        if (stackFrames.length === 0) {
+                            addTerminalOutput('Error: Stack is empty', 'error');
+                        } else {
+                            popStack();
+                            addTerminalOutput('Stack frame popped', 'success');
+                        }
+                        break;
+
+                    case 'list':
+                        if (heapBlocks.length === 0) {
+                            addTerminalOutput('No allocated blocks', 'info');
+                        } else {
+                            addTerminalOutput(`Allocated blocks (${heapBlocks.length}):`, 'success');
+                            heapBlocks.forEach(b => {
+                                addTerminalOutput(`  #${b.id}: ${b.size}KB @ 0x${b.position.toString(16).padStart(4, '0')}`, 'info');
+                            });
+                        }
+                        break;
+
+                    case 'stack':
+                        if (stackFrames.length === 0) {
+                            addTerminalOutput('Stack is empty', 'info');
+                        } else {
+                            addTerminalOutput(`Stack frames (${stackFrames.length}):`, 'success');
+                            stackFrames.slice().reverse().forEach((f, i) => {
+                                addTerminalOutput(`  ${i + 1}. ${f.name} [${f.variables} vars]`, 'info');
+                            });
+                        }
+                        break;
+
+                    case 'stats':
+                        addTerminalOutput('Memory Statistics:', 'success');
+                        addTerminalOutput(`  Heap Usage: ${heapPercentage}% (${usedHeap}/${HEAP_SIZE} KB)`, 'info');
+                        addTerminalOutput(`  Active Blocks: ${stats.activeBlocks}`, 'info');
+                        addTerminalOutput(`  Fragmentation: ${stats.fragmentation} gaps`, 'info');
+                        addTerminalOutput(`  Total Allocated: ${stats.totalAllocated} KB`, 'info');
+                        addTerminalOutput(`  Total Freed: ${stats.totalFreed} KB`, 'info');
+                        addTerminalOutput(`  Stack Depth: ${stackFrames.length}`, 'info');
+                        break;
+
+                    case 'auto':
+                        const mode = args[0];
+                        if (mode === 'on') {
+                            setIsAutoMode(true);
+                            addTerminalOutput('Auto mode enabled', 'success');
+                        } else if (mode === 'off') {
+                            setIsAutoMode(false);
+                            addTerminalOutput('Auto mode disabled', 'success');
+                        } else {
+                            setIsAutoMode(!isAutoMode);
+                            addTerminalOutput(`Auto mode ${!isAutoMode ? 'enabled' : 'disabled'}`, 'success');
+                        }
+                        break;
+
+                    case 'reset':
+                        reset();
+                        addTerminalOutput('Memory reset complete', 'success');
+                        break;
+
+                    case 'clear':
+                        setTerminalHistory([
+                            { type: 'system', text: 'Memory Manager Terminal v1.0' },
+                            { type: 'system', text: 'Type "help" for available commands' }
+                        ]);
+                        break;
+
+                    default:
+                        addTerminalOutput(`Unknown command: ${command}. Type "help" for available commands.`, 'error');
+                }
+            };
+
+            const handleTerminalKeyDown = (e) => {
+                if (e.key === 'Enter') {
+                    executeCommand(terminalInput);
+                    setTerminalInput('');
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    if (commandHistory.length > 0) {
+                        const newIndex = historyIndex === -1 ? commandHistory.length - 1 : Math.max(0, historyIndex - 1);
+                        setHistoryIndex(newIndex);
+                        setTerminalInput(commandHistory[newIndex]);
+                    }
+                } else if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    if (historyIndex !== -1) {
+                        const newIndex = historyIndex + 1;
+                        if (newIndex >= commandHistory.length) {
+                            setHistoryIndex(-1);
+                            setTerminalInput('');
+                        } else {
+                            setHistoryIndex(newIndex);
+                            setTerminalInput(commandHistory[newIndex]);
+                        }
+                    }
+                }
             };
 
             const allocateMemory = (size) => {
@@ -464,6 +629,46 @@
                                             No activity recorded yet
                                         </div>
                                     )}
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Terminal */}
+                        <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden mt-6">
+                            <div className="bg-slate-800/50 px-6 py-4 border-b border-slate-700 flex items-center justify-between">
+                                <h3 className="text-lg font-semibold">Command Terminal</h3>
+                                <span className="text-xs text-slate-500 font-mono">Type "help" for commands</span>
+                            </div>
+                            <div className="p-6 bg-black/30">
+                                <div className="bg-black/50 rounded-lg p-4 font-mono text-sm">
+                                    <div className="space-y-1 max-h-64 overflow-y-auto mb-3" id="terminal-output">
+                                        {terminalHistory.map((entry, idx) => (
+                                            <div 
+                                                key={idx}
+                                                className={
+                                                    entry.type === 'command' ? 'text-cyan-400 font-semibold' :
+                                                    entry.type === 'error' ? 'text-rose-400' :
+                                                    entry.type === 'success' ? 'text-emerald-400' :
+                                                    entry.type === 'system' ? 'text-purple-400' :
+                                                    'text-slate-400'
+                                                }
+                                            >
+                                                {entry.text}
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-emerald-400">$</span>
+                                        <input
+                                            type="text"
+                                            value={terminalInput}
+                                            onChange={(e) => setTerminalInput(e.target.value)}
+                                            onKeyDown={handleTerminalKeyDown}
+                                            className="flex-1 bg-transparent outline-none text-white"
+                                            placeholder="Enter command..."
+                                            autoComplete="off"
+                                        />
+                                    </div>
                                 </div>
                             </div>
                         </div>
